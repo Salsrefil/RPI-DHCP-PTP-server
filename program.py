@@ -2,6 +2,7 @@
 # -*- coding:utf-8 -*-
 import subprocess
 import dbus
+import re
 import epd2in7
 from datetime import datetime, timezone
 from signal import pause, signal, SIGTERM, SIGINT
@@ -42,14 +43,14 @@ def start_ptp_slave():
     global ptp_daemon
     if ptp_daemon:
         ptp_daemon.terminate()
-    ptp_daemon = subprocess.Popen(["ptp4l", "-S", "-i", "eth0", "-s"])
+    ptp_daemon = subprocess.Popen(["ptp4l", "-f", "/home/pi/program/ptpconfig", "-S", "-i", "eth0", "-s"])
 
 
 def start_ptp_master():
     global ptp_daemon
     if ptp_daemon:
         ptp_daemon.terminate()
-    ptp_daemon = subprocess.Popen(["ptp4l", "-S", "-i", "eth0"])
+    ptp_daemon = subprocess.Popen(["ptp4l", "-f", "/home/pi/program/ptpconfig", "-S", "-i", "eth0"])
     while True:
         result = subprocess.run(["pmc", "-u", "-b", "0", "SET PRIORITY1 0"], capture_output=True, text=True)
         if result.returncode == 0:
@@ -106,61 +107,47 @@ def get_master():
         "current_time": None,
         "current_offset": None,
         "current_master": None,
-        "master_description": None
+        "master_description": None,
+        "clock_count": None
     }
     result = subprocess.run(
         ["pmc", "-u", "-b", "0", "GET TIME_STATUS_NP"], capture_output=True, text=True)
     if result.returncode == 0:
+        time = 0
         for line in result.stdout.split('\n'):
             if "gmPresent" in line:
                 if "true" in line:
                     info.update({"foreign_master": True})
             if "ingress_time" in line:
-                info.update({"current_time": datetime.fromtimestamp(int(line.split()[-1])/10e8, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")})
+                time += int(line.split()[-1])
             if "master_offset" in line:
+                time -= int(line.split()[-1])
                 info.update({"current_offset": line.split()[-1]})
             if "gmIdentity" in line:
                 info.update(
                     {"current_master": clock_identity_to_mac(line.split()[-1])})
+        info.update({"current_time": datetime.fromtimestamp(time/1e9, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")})
     else:
         return None
-    if info["foreign_master"] and "current_master":
-        result = subprocess.run(
-            ["pmc", "-u", "GET CLOCK_DESCRIPTION"], capture_output=True, text=True)
-        if result.returncode == 0:
-            master_found = False
-            for line in result.stdout.split('\n'):
-                if not master_found and "physicalAddress" in line and info["current_master"] in line:
+    result = subprocess.run(
+        ["pmc", "-u", "-b", "1000", "GET CLOCK_DESCRIPTION"], capture_output=True, text=True)
+    if result.returncode == 0:
+        master_found = False
+        client_count = -1
+        for line in result.stdout.split('\n'):
+            if re.match(r"^\t[a-f\d]{6}.[a-f\d]{4}.[a-f\d]{6}", line):
+                client_count += 1
+            if not info["master_description"] and info["foreign_master"] and info["current_master"]:
+                if not master_found and "physicalAddress" in line and info["current_master"] in line:	
                     master_found = True
-                if "productDescription" in line:
-                    info.update({"master_description": line.split()[-1]})
-                    break
-        else:
-            return None
+                if master_found and "productDescription" in line:
+                    master_description = line.strip().split(maxsplit=1)[-1].split(';')
+                    if master_description[0] or master_description[1]:
+                        info.update({"master_description": master_description[0]+":"+master_description[1]})
+        info.update({"clock_count": client_count})
+    else:
+        return None
     return info
-
-
-# def get_ptp():
-#     response = ""
-#     mac_found = False
-#     result = subprocess.run(
-#         ["pmc", "-u", "GET TIME_STATUS_NP"], capture_output=True, text=True)
-#     if result.returncode == 0:
-#         for line in result.stdout.split('\n'):
-#             if re.match(r"^\t[a-f\d]{6}.[a-f\d]{4}.[a-f\d]{6}-\d", line):
-#                 mac = clock_identity_to_mac(line.split("-")[0])
-#                 mac_found = True
-#                 response += mac
-#             if "master_offset" in line:
-#                 if mac_found:
-#                     mac_found = False
-#                     response += " Offset: "+line.split()[-1]+"\n"
-#         if not response:
-#             return "(no clients)"
-#         else:
-#             return response
-#     else:
-#         return "Failed to get data"
 
 
 def draw_labels(image, label1, label2, label3, label4):
@@ -196,11 +183,11 @@ def show_ptp():
     draw = ImageDraw.Draw(image)
     info = get_master()
     if ptp_master_active:
-        response = f"Working as PTP master:\nMy MAC:\n{info['current_master']}"
+        response = f"Working as PTP master\nMy MAC:\n{info['current_master']}\nClock count:\n{info['clock_count']}"
     else:
-        response = "Working as PTP slave:\n"
+        response = "Working as PTP slave\n"
         if info["foreign_master"]:
-            response += f"Master MAC:\n{info['current_master']}\nMaster description:\n{info['master_description']}\nCurrent time:\n{info['current_time']}\nCurrent offset:\n{info['current_offset']}"
+            response += f"Master MAC:\n{info['current_master']}\nMaster description:\n{info['master_description']}\nCurrent time:\n{info['current_time']}\nCurrent offset:\n{info['current_offset']}ns\nClock count:\n{info['clock_count']}"
         else:
             response += "(No foreign master found)"
     draw.text((font.size+20, 10), response, font=font)
