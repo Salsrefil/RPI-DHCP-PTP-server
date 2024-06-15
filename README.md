@@ -34,3 +34,7 @@ Zapytanie przełącza DHCP pomiędzy trybem klienta i serwera. Payload może by�
 ### POST /ptp_toggle
 
 Zapytanie przełącza PTP pomiędzy trybem master i slave. Payload może być pusty.
+
+### POST /set_time
+
+Ustawia czas lokalnego zegara urządzenia w celu serwowania go w trybie master PTP. Payload musi być type JSON z polem "time" zawierającym datę i czas w formacie ISO8601. Czas może zawierać część ułamkową sekundy oraz przesunięcie względem UTC.

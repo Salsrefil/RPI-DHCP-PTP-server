@@ -145,19 +145,22 @@ def get_ptp_info():
     if result.returncode == 0:
         time = 0
         for line in result.stdout.split('\n'):
-            if "gmPresent" in line:
-                if "true" in line:
+            if not ptp_master_active:
+                if "gmPresent" in line and "true" in line:
                     info.update({"foreign_master": True})
-            if "ingress_time" in line:
-                time += int(line.split()[-1])
-            if "master_offset" in line:
-                time -= int(line.split()[-1])
-                info.update({"current_offset": line.split()[-1]})
+                if "ingress_time" in line:
+                    time += int(line.split()[-1])
+                if "master_offset" in line:
+                    time -= int(line.split()[-1])
+                    info.update({"current_offset": line.split()[-1]})
             if "gmIdentity" in line:
                 info.update(
                     {"current_master": clock_identity_to_mac(line.split()[-1])})
-        info.update({"current_time": datetime.fromtimestamp(
-            time/1e9, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")})
+        if not ptp_master_active:
+            info.update({"current_time": datetime.fromtimestamp(
+                time/1e9, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")})
+        else:
+            info.update({"current_time": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")})
     else:
         return None
     result = subprocess.run(
@@ -228,13 +231,12 @@ def show_ptp():
     draw = ImageDraw.Draw(image)
     info = get_ptp_info()
     if ptp_master_active:
-        response = f"Working as PTP master\nMy MAC:\n{info['current_master']}\nClock count:\n{info['clock_count']}"
+        response = f"Working as PTP master\nMy MAC:\n{info['current_master']}\nCurrent time:\n{info['current_time']}\nClock count:\n{info['clock_count']}"
     else:
-        response = "Working as PTP slave\n"
         if info["foreign_master"]:
-            response += f"Master MAC:\n{info['current_master']}\nMaster description:\n{info['master_description']}\nCurrent time:\n{info['current_time']}\nCurrent offset:\n{info['current_offset']}ns\nClock count:\n{info['clock_count']}"
+            response = f"Working as PTP slave\nMaster MAC:\n{info['current_master']}\nMaster description:\n{info['master_description']}\nCurrent time:\n{info['current_time']}\nCurrent offset:\n{info['current_offset']}ns\nClock count:\n{info['clock_count']}"
         else:
-            response += "(No foreign master found)"
+            response = f"Working as PTP slave\n(No foreign master found)\nClock count:\n{info['clock_count']}"
     draw.text((font.size+20, 10), response, font=font)
     show_image(image)
 
@@ -279,6 +281,14 @@ def toggle_dhcp_server():
     refresh()
 
 
+def set_time(datetime):
+    subprocess.run(
+        ["timedatectl", "set-time", datetime.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")],
+        capture_output=True,
+        text=True
+    )
+
+
 # connect to network for development
 subprocess.run(
     ["/home/pi/program/switch_ap"],
@@ -317,6 +327,12 @@ def dhcp_toggle_handler():
 @app.post("/ptp_toggle")
 def ptp_toggle_handler():
     toggle_ptp_master()
+    return flask.Response(status=200)
+
+
+@app.post("/set_time")
+def set_time_handler():
+    set_time(datetime.fromisoformat(flask.request.json['time']))
     return flask.Response(status=200)
 
 
