@@ -3,9 +3,11 @@
 import subprocess
 import dbus
 import re
+import shutil
 import epd2in7
+import flask
 from datetime import datetime, timezone
-from signal import pause, signal, SIGTERM, SIGINT
+from signal import signal, SIGTERM, SIGINT
 from PIL import Image, ImageDraw, ImageFont
 from gpiozero import Button
 
@@ -18,6 +20,7 @@ system_bus = dbus.SystemBus()
 epd = epd2in7.EPD()
 ptp_daemon = None
 ptp_master_active = False
+dhcp_server_active = False
 current_view = "ptp"
 
 
@@ -43,55 +46,81 @@ def start_ptp_slave():
     global ptp_daemon
     if ptp_daemon:
         ptp_daemon.terminate()
-    ptp_daemon = subprocess.Popen(["ptp4l", "-f", "/home/pi/program/ptpconfig", "-S", "-i", "eth0", "-s"])
+    ptp_daemon = subprocess.Popen(
+        ["ptp4l", "-f", "/home/pi/program/ptpconfig", "-S", "-i", "eth0", "-s"])
 
 
 def start_ptp_master():
     global ptp_daemon
     if ptp_daemon:
         ptp_daemon.terminate()
-    ptp_daemon = subprocess.Popen(["ptp4l", "-f", "/home/pi/program/ptpconfig", "-S", "-i", "eth0"])
+    ptp_daemon = subprocess.Popen(
+        ["ptp4l", "-f", "/home/pi/program/ptpconfig", "-S", "-i", "eth0"])
     while True:
-        result = subprocess.run(["pmc", "-u", "-b", "0", "SET PRIORITY1 0"], capture_output=True, text=True)
+        result = subprocess.run(
+            ["pmc", "-u", "-b", "0", "SET PRIORITY1 0"], capture_output=True, text=True)
         if result.returncode == 0:
             for line in result.stdout.split('\n'):
                 if "priority1" in line and line.split()[-1] == "0":
                     return
 
 
-def get_leases():
-    try:
-        link = (
-            subprocess.run(
-                ["ip --oneline link show dev eth0 | cut -f 1 -d:"],
-                capture_output=True,
-                shell=True,
-                text=True
+def start_eth_dhcp():
+    shutil.copyfile('/home/pi/program/ethdhcp',
+                    '/etc/systemd/network/wired.network')
+    subprocess.run(["networkctl", "reload"], capture_output=True, text=True)
+
+
+def start_eth_static():
+    shutil.copyfile('/home/pi/program/ethstatic',
+                    '/etc/systemd/network/wired.network')
+    subprocess.run(["networkctl", "reload"], capture_output=True, text=True)
+
+
+def get_dhcp_info():
+    info = {
+        "dhcp_server_active": dhcp_server_active,
+        "my_ip": None,
+        "leases": None,
+    }
+    if dhcp_server_active:
+        info.update({"my_ip": "10.0.0.1"})
+        try:
+            link = (
+                subprocess.run(
+                    ["ip --oneline link show dev eth0 | cut -f 1 -d:"],
+                    capture_output=True,
+                    shell=True,
+                    text=True
+                )
+                .stdout
+                .strip()
             )
-            .stdout
-            .strip()
-        )
-        leases = system_bus.get_object(
-            "org.freedesktop.network1", "/org/freedesktop/network1/link/" + link
-        ).Get(
-            "org.freedesktop.network1.DHCPServer",
-            "Leases",
-            dbus_interface="org.freedesktop.DBus.Properties",
-        )
-        lease_string = "\n".join(
-            map(
+            lease_struct = system_bus.get_object(
+                "org.freedesktop.network1", "/org/freedesktop/network1/link/" + link
+            ).Get(
+                "org.freedesktop.network1.DHCPServer",
+                "Leases",
+                dbus_interface="org.freedesktop.DBus.Properties",
+            )
+            leases = list(map(
                 lambda l: ".".join(map(str, map(int, l[2])))
                 + " "
                 + ":".join(map(lambda n: "%x" % n, l[4][:6])),
-                leases,
-            )
-        )
-        if lease_string:
-            return lease_string
-        else:
-            return "(no leases)"
-    except dbus.exceptions.DBusException:
-        return "Interface not configured yet"
+                lease_struct,
+            ))
+            if leases:
+                info.update({"leases": leases})
+        except dbus.exceptions.DBusException:
+            return info
+    else:
+        result = subprocess.run(
+            ["networkctl", "status"], capture_output=True, text=True)
+        for line in result.stdout.split('\n'):
+            if re.match(r".*\d+\.\d+\.\d+\.\d+ on eth0", line):
+                info.update({"my_ip": line.split()[-3]})
+                break
+    return info
 
 
 def clock_identity_to_mac(clock_identity):
@@ -101,8 +130,9 @@ def clock_identity_to_mac(clock_identity):
         a + b for a, b in zip(parts[::2], parts[1::2]))
 
 
-def get_master():
+def get_ptp_info():
     info = {
+        "ptp_master_active": ptp_master_active,
         "foreign_master": False,
         "current_time": None,
         "current_offset": None,
@@ -126,7 +156,8 @@ def get_master():
             if "gmIdentity" in line:
                 info.update(
                     {"current_master": clock_identity_to_mac(line.split()[-1])})
-        info.update({"current_time": datetime.fromtimestamp(time/1e9, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")})
+        info.update({"current_time": datetime.fromtimestamp(
+            time/1e9, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")})
     else:
         return None
     result = subprocess.run(
@@ -135,15 +166,17 @@ def get_master():
         master_found = False
         client_count = -1
         for line in result.stdout.split('\n'):
-            if re.match(r"^\t[a-f\d]{6}.[a-f\d]{4}.[a-f\d]{6}", line):
+            if re.match(r"^\t[a-f\d]{6}\.[a-f\d]{4}\.[a-f\d]{6}", line):
                 client_count += 1
             if not info["master_description"] and info["foreign_master"] and info["current_master"]:
-                if not master_found and "physicalAddress" in line and info["current_master"] in line:	
+                if not master_found and "physicalAddress" in line and info["current_master"] in line:
                     master_found = True
                 if master_found and "productDescription" in line:
-                    master_description = line.strip().split(maxsplit=1)[-1].split(';')
+                    master_description = line.strip().split(
+                        maxsplit=1)[-1].split(';')
                     if master_description[0] or master_description[1]:
-                        info.update({"master_description": master_description[0]+":"+master_description[1]})
+                        info.update(
+                            {"master_description": master_description[0]+":"+master_description[1]})
         info.update({"clock_count": client_count})
     else:
         return None
@@ -168,9 +201,21 @@ def draw_labels(image, label1, label2, label3, label4):
 
 def show_dhcp():
     image = Image.new("1", (epd.height, epd.width), 255)
-    draw_labels(image, "Refresh", "Reboot", "PTP", "")
+    if dhcp_server_active:
+        draw_labels(image, "Refresh", "Reboot", "PTP", "Client")
+    else:
+        draw_labels(image, "Refresh", "Reboot", "PTP", "Server")
     draw = ImageDraw.Draw(image)
-    draw.text((font.size+20, 10), "DHCP Info:\n"+get_leases(), font=font)
+    info = get_dhcp_info()
+    if dhcp_server_active:
+        if info['leases']:
+            leases = '\n'.join(info['leases'])
+        else:
+            leases = 'None'
+        response = f"Working as DHCP server\nMy IP:\n{info['my_ip']}\nLeases:\n{leases}"
+    else:
+        response = f"Working as DHCP client\nLeased IP:\n{info['my_ip']}"
+    draw.text((font.size+20, 10), response, font=font)
     show_image(image)
 
 
@@ -181,7 +226,7 @@ def show_ptp():
     else:
         draw_labels(image, "Refresh", "Reboot", "DHCP", "Master")
     draw = ImageDraw.Draw(image)
-    info = get_master()
+    info = get_ptp_info()
     if ptp_master_active:
         response = f"Working as PTP master\nMy MAC:\n{info['current_master']}\nClock count:\n{info['clock_count']}"
     else:
@@ -207,7 +252,7 @@ def switch_view():
         server_button.when_pressed = toggle_ptp_master
         current_view = "ptp"
     elif current_view == "ptp":
-        server_button.when_pressed = None
+        server_button.when_pressed = toggle_dhcp_server
         current_view = "dhcp"
     refresh()
 
@@ -223,6 +268,25 @@ def toggle_ptp_master():
     refresh()
 
 
+def toggle_dhcp_server():
+    global dhcp_server_active
+    if dhcp_server_active:
+        start_eth_dhcp()
+        dhcp_server_active = False
+    else:
+        start_eth_static()
+        dhcp_server_active = True
+    refresh()
+
+
+# connect to network for development
+subprocess.run(
+    ["/home/pi/program/switch_ap"],
+    capture_output=True,
+    shell=True,
+    text=True
+)
+start_eth_dhcp()
 start_ptp_slave()
 restart_button.when_pressed = restart
 refresh_button.when_pressed = refresh
@@ -231,4 +295,34 @@ server_button.when_pressed = toggle_ptp_master
 signal(SIGTERM, end_program)
 signal(SIGINT, end_program)
 refresh()
-pause()
+app = flask.Flask(__name__, static_url_path='', static_folder='static',)
+
+
+@app.get("/ptp_info")
+def ptp_info_handler():
+    return flask.jsonify(get_ptp_info())
+
+
+@app.get("/dhcp_info")
+def dhcp_info_handler():
+    return flask.jsonify(get_dhcp_info())
+
+
+@app.post("/dhcp_toggle")
+def dhcp_toggle_handler():
+    toggle_dhcp_server()
+    return flask.Response(status=200)
+
+
+@app.post("/ptp_toggle")
+def ptp_toggle_handler():
+    toggle_ptp_master()
+    return flask.Response(status=200)
+
+
+@app.errorhandler(404)
+def spa_handler(error):
+    return flask.send_file('static/index.html')
+
+
+app.run(host='0.0.0.0', port='80')

@@ -1,0 +1,21 @@
+#!/bin/sh
+if [ ${1:-0} -eq 0 ]
+then
+	systemctl stop hostapd
+	systemctl stop dnsmasq
+	iptables -t nat -F
+	printf "[Match]\nName=wlan*\n\n[Network]\nDHCP=true\n" > /etc/systemd/network/wireless.network
+	networkctl reload
+	systemctl start iwd
+	systemctl start systemd-resolved
+	iwctl device wlan0 set-property Mode station
+	iwctl station wlan0 connect AX5
+else
+	systemctl stop iwd
+	systemctl stop systemd-resolved
+	iptables-restore < /etc/iptables/rules.v4
+	printf "[Match]\nName=wlan*\n\n[Network]\nAddress=192.168.0.1/24\nDHCPServer=true\nIPForward=true\n\n[DHCPServer]\nEmitDNS=true\nDNS=_server_address\n" > /etc/systemd/network/wireless.network
+	networkctl reload
+	systemctl start hostapd
+	systemctl start dnsmasq
+fi

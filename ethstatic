@@ -1,0 +1,9 @@
+[Match]
+Name=eth*
+
+[Network]
+DHCPServer=true
+Address=10.0.0.1/24
+
+[DHCPServer]
+MaxLeaseTimeSec=2m
