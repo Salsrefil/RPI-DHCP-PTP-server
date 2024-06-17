@@ -38,3 +38,7 @@ Zapytanie przełącza PTP pomiędzy trybem master i slave. Payload może być pu
 ### POST /set_time
 
 Ustawia czas lokalnego zegara urządzenia w celu serwowania go w trybie master PTP. Payload musi być type JSON z polem "time" zawierającym datę i czas w formacie ISO8601. Czas może zawierać część ułamkową sekundy oraz przesunięcie względem UTC.
+
+### POST /sync_time
+
+Synchronizuje czas lokalnego zegara z obcym masterem. Zapytanie działa tylko w trybie slave, gdy znaleziony został obcy master, w przeciwnym wypadku nic nie robi. Payload może być pusty.

@@ -13,9 +13,9 @@ from gpiozero import Button
 
 font = ImageFont.truetype("/usr/share/fonts/truetype/DejaVuSansMono.ttf")
 refresh_button = Button(5)
-restart_button = Button(6)
-view_switch_button = Button(13)
-server_button = Button(19)
+view_button = Button(6)
+mode_button = Button(13)
+aux_button = Button(19)
 system_bus = dbus.SystemBus()
 epd = epd2in7.EPD()
 ptp_daemon = None
@@ -205,9 +205,9 @@ def draw_labels(image, label1, label2, label3, label4):
 def show_dhcp():
     image = Image.new("1", (epd.height, epd.width), 255)
     if dhcp_server_active:
-        draw_labels(image, "Refresh", "Reboot", "PTP", "Client")
+        draw_labels(image, "Refresh", "PTP", "Client", "")
     else:
-        draw_labels(image, "Refresh", "Reboot", "PTP", "Server")
+        draw_labels(image, "Refresh", "PTP", "Server", "")
     draw = ImageDraw.Draw(image)
     info = get_dhcp_info()
     if dhcp_server_active:
@@ -225,9 +225,9 @@ def show_dhcp():
 def show_ptp():
     image = Image.new("1", (epd.height, epd.width), 255)
     if ptp_master_active:
-        draw_labels(image, "Refresh", "Reboot", "DHCP", "Slave")
+        draw_labels(image, "Refresh", "DHCP", "Slave", "")
     else:
-        draw_labels(image, "Refresh", "Reboot", "DHCP", "Master")
+        draw_labels(image, "Refresh", "DHCP", "Master", "Sync")
     draw = ImageDraw.Draw(image)
     info = get_ptp_info()
     if ptp_master_active:
@@ -251,10 +251,13 @@ def refresh():
 def switch_view():
     global current_view
     if current_view == "dhcp":
-        server_button.when_pressed = toggle_ptp_master
+        mode_button.when_pressed = toggle_ptp_master
+        if not ptp_master_active:
+            aux_button.when_pressed = sync_time
         current_view = "ptp"
     elif current_view == "ptp":
-        server_button.when_pressed = toggle_dhcp_server
+        mode_button.when_pressed = toggle_dhcp_server
+        aux_button.when_pressed = None
         current_view = "dhcp"
     refresh()
 
@@ -267,7 +270,12 @@ def toggle_ptp_master():
     else:
         start_ptp_master()
         ptp_master_active = True
-    refresh()
+    if current_view == "ptp":
+        if ptp_master_active:
+            aux_button.when_pressed = None
+        else:
+            aux_button.when_pressed = sync_time
+        refresh()
 
 
 def toggle_dhcp_server():
@@ -278,7 +286,8 @@ def toggle_dhcp_server():
     else:
         start_eth_static()
         dhcp_server_active = True
-    refresh()
+    if current_view == "dhcp":
+        refresh()
 
 
 def set_time(datetime):
@@ -287,6 +296,27 @@ def set_time(datetime):
         capture_output=True,
         text=True
     )
+    if current_view == "ptp":
+        refresh()
+
+
+def sync_time():
+    if ptp_master_active:
+        return
+    result = subprocess.run(
+        ["pmc", "-u", "-b", "0", "GET TIME_STATUS_NP"], capture_output=True, text=True)
+    if result.returncode == 0:
+        time = 0
+        foreign = False
+        for line in result.stdout.split('\n'):
+            if "gmPresent" in line and "true" in line:
+                foreign = True
+            if "ingress_time" in line:
+                time += int(line.split()[-1])
+            if "master_offset" in line:
+                time -= int(line.split()[-1])
+        if foreign:
+            set_time(datetime.fromtimestamp(time/1e9, tz=timezone.utc))
 
 
 # connect to network for development
@@ -298,10 +328,10 @@ subprocess.run(
 )
 start_eth_dhcp()
 start_ptp_slave()
-restart_button.when_pressed = restart
 refresh_button.when_pressed = refresh
-view_switch_button.when_pressed = switch_view
-server_button.when_pressed = toggle_ptp_master
+view_button.when_pressed = switch_view
+mode_button.when_pressed = toggle_ptp_master
+aux_button.when_pressed = sync_time
 signal(SIGTERM, end_program)
 signal(SIGINT, end_program)
 refresh()
@@ -333,6 +363,12 @@ def ptp_toggle_handler():
 @app.post("/set_time")
 def set_time_handler():
     set_time(datetime.fromisoformat(flask.request.json['time']))
+    return flask.Response(status=200)
+
+
+@app.post("/sync_time")
+def sync_time_handler():
+    sync_time()
     return flask.Response(status=200)
 
 
