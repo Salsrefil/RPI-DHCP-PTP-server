@@ -7,6 +7,8 @@ Przenośny serwer diagnostyczny DHCP i PTP
 
 * dhcp_server_active - działamy jako server DHCP czy klient
 
+* foreign_dhcp_server - adres IP obcego serwera DHCP wykryty podczas operacji skanowania lub null w przypadku nie wykrycia obcego serwera
+
 * leases - lista leasów np. "10.0.0.139 e0:d5:5e:83:cd:13". null, gdy jest pusta lub działamy jako klient
 
 * my_ip - stały adres IP, gdy działamy jako server lub adres przydzielony przez zewnętrzny server DHCP, null, gdy nie mamy adresu
@@ -29,7 +31,7 @@ Przenośny serwer diagnostyczny DHCP i PTP
 
 ### POST /dhcp_toggle
 
-Zapytanie przełącza DHCP pomiędzy trybem klienta i serwera. Payload może być pusty.
+Zapytanie przełącza DHCP pomiędzy trybem klienta i serwera. Przełączenie z trybu klienta na tryb serwera zadziała tylko wtedy, gdy nie wykryto obcego serwera DHCP, tzn. pole foreign_dhcp_server w obiekcie ma wartość null. Payload może być pusty.
 
 ### POST /ptp_toggle
 
@@ -42,3 +44,7 @@ Ustawia czas lokalnego zegara urządzenia w celu serwowania go w trybie master P
 ### POST /sync_time
 
 Synchronizuje czas lokalnego zegara z obcym masterem. Zapytanie działa tylko w trybie slave, gdy znaleziony został obcy master, w przeciwnym wypadku nic nie robi. Payload może być pusty.
+
+### POST /dhcp_scan
+
+Wykonuje operację skanowania sieci w celu znalezienia obcego serwera DHCP. Operacja skanu jest przeprowadzana automatycznie na starcie programu. Payload może być pusty.
