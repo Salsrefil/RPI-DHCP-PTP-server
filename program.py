@@ -93,7 +93,7 @@ def dhcp_scan():
         / scapy.DHCP(options=[("message-type", "discover"), "end"])
     )
     ans, unans = scapy.srp(
-        dhcp_discover, multi=True, timeout=5, verbose=0, iface="eth0"
+        dhcp_discover, multi=True, timeout=1, verbose=0, iface="eth0"
     )
     for snd, rcv in ans:
         if scapy.DHCP in rcv and rcv[scapy.DHCP].options[0][1] == 2:
@@ -388,10 +388,6 @@ def sync_time():
                 refresh()
 
 
-# connect to network for development
-subprocess.run(
-    ["/home/pi/program/switch_ap"], capture_output=True, shell=True, text=True
-)
 dhcp_scan()
 start_eth_dhcp()
 start_ptp_slave()
