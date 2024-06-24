@@ -6,6 +6,7 @@ import re
 import shutil
 import epd2in7
 import flask
+import flask_cors
 import scapy.all as scapy
 from datetime import datetime, timezone
 from signal import signal, SIGTERM, SIGINT
@@ -13,12 +14,12 @@ from PIL import Image, ImageDraw, ImageFont
 from gpiozero import Button
 
 font = ImageFont.truetype("/usr/share/fonts/truetype/DejaVuSansMono.ttf")
+system_bus = dbus.SystemBus()
+epd = epd2in7.EPD()
 refresh_button = Button(5)
 view_button = Button(6)
 mode_button = Button(13)
 aux_button = Button(19)
-system_bus = dbus.SystemBus()
-epd = epd2in7.EPD()
 ptp_daemon = None
 ptp_master_active = False
 dhcp_server_active = False
@@ -394,16 +395,17 @@ subprocess.run(
 dhcp_scan()
 start_eth_dhcp()
 start_ptp_slave()
+refresh()
 refresh_button.when_pressed = refresh
 view_button.when_pressed = switch_view
 signal(SIGTERM, end_program)
 signal(SIGINT, end_program)
-refresh()
 app = flask.Flask(
     __name__,
     static_url_path="",
     static_folder="static",
 )
+flask_cors.CORS(app)
 
 
 @app.get("/ptp_info")
